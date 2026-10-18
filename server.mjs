@@ -20,7 +20,7 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
   let globalUntil=0,tail=Promise.resolve(),pending=0;const cooldowns=new Map(),receipts=new Map();
   const answer=(res,status,data,headers={})=>{if(!res.destroyed&&!res.writableEnded)res.writeHead(status,{'content-type':'application/json','cache-control':'no-store',...headers}).end(JSON.stringify(data));};
   return http.createServer(async(req,res)=>{
-    if(req.method==='GET'&&req.url==='/health')return answer(res,200,{ok:true,service:'storm-discord-relay'});
+    if(req.method==='GET'&&(req.url==='/health'||req.url==='/'))return answer(res,200,{ok:true,service:'storm-discord-relay'});
     if(req.method!=='POST'||req.url!=='/relay')return answer(res,404,{error:'not_found'});
     const auth=req.headers.authorization||'';
     if(!timingSafeEqual(digest(auth),digest('Bearer '+config.secret)))return answer(res,401,{error:'unauthorized'});
