@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: storm-discord-relay
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: RELAY_SECRET
+        sync: false
+      - key: DISCORD_WEBHOOKS_JSON
+        sync: false
