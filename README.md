@@ -29,3 +29,7 @@ Mentiunile Discord sunt dezactivate. Cererile sunt serializate, limitate la 64 K
 Node 22 sau mai nou. Configureaza variabilele de mediu (sau `node --env-file=.env server.mjs`), apoi `npm start`. Verificari: `npm test`.
 
 Nu pune `.env`, parole SFTP sau webhookuri in repository. Workerul local Python ramane o alternativa pana cand este activat relay-ul gazduit.
+
+## Ten-minute log reports
+
+The FiveM durable queue seals events every 600 seconds, grouped by original webhook. Each report attaches the original timestamped events as JSONL, splitting files only at 900 KB. Failed batches retain the same id and contents until confirmed delivery. Restart does not discard pending events. The status card continues to edit its existing message independently. The relay accepts validated JSONL log attachments and posts them using Discord multipart uploads. `/health` exposes `log_batch_files: true` when this version is live.

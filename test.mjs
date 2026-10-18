@@ -44,3 +44,20 @@ test('status creates once then edits the persisted message',async()=>{
  response=await post();assert.equal(response.status,200);assert.equal(requests[0].method,'POST');assert(requests[0].url.endsWith('?wait=true'));assert.equal(requests[1].method,'PATCH');assert(requests[1].url.endsWith('/messages/'+row.message_id));
  }finally{await new Promise(r=>server.close(r));}
 });
+
+test('ten-minute reports upload complete JSONL and deduplicate attachment content',async()=>{
+ let calls=0;
+ const server=createRelay(configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:JSON.stringify({connect:webhook})}),{fetcher:async(url,options)=>{
+  calls++;assert(options.body instanceof FormData);assert.equal(options.headers['Content-Type'],undefined);
+  const message=JSON.parse(options.body.get('payload_json'));assert.deepEqual(message.allowed_mentions,{parse:[]});assert.equal(message.storm_log_file,undefined);
+  const file=options.body.get('files[0]');assert.equal(file.name,'storm-logs-123.jsonl');assert.equal(await file.text(),'event-1\nevent-2');
+  return new Response(null,{status:204});
+ }});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ try{
+  const row={route:'123',id:'batch-1',payload:{content:'2 events',storm_log_file:{name:'storm-logs-123.jsonl',text:'event-1\nevent-2'}}};
+  const post=()=>fetch(base+'/relay',{method:'POST',headers:{authorization:'Bearer '+secret},body:JSON.stringify(row)});
+  assert.equal((await post()).status,200);assert.equal((await post()).status,200);assert.equal(calls,1);
+  row.payload.storm_log_file.name='../invalid';assert.equal((await post()).status,400);
+ }finally{await new Promise(r=>server.close(r));}
+});
