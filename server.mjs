@@ -27,9 +27,16 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
     if(pending>=100)return answer(res,503,{error:'busy'});
     let raw='',row;
     try{for await(const part of req){raw+=part.toString('utf8');if(Buffer.byteLength(raw)>65536)return answer(res,413,{error:'payload_too_large'});}row=JSON.parse(raw);}catch{return answer(res,400,{error:'invalid_json'});}
-    if(!row||typeof row!=='object'||!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||!config.routes.has(String(row.route)))return answer(res,400,{error:'invalid_route_or_payload'});
+    if(!row||typeof row!=='object'||!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||(!config.routes.has(String(row.route))&&String(row.route)!=='1561465296584179864'))return answer(res,400,{error:'invalid_route_or_payload'});
     if(row.payload.content===undefined&&!Array.isArray(row.payload.embeds))return answer(res,400,{error:'empty_message'});
-    const url=config.routes.get(String(row.route));
+    let url=config.routes.get(String(row.route));
+    if(!url&&String(row.route)==='1561465296584179864'){
+      try{
+        const destination=new URL(row.destination);
+        if(destination.protocol!=='https:'||destination.host!=='discord.com'||destination.username||destination.password||destination.search||destination.hash||!/^\/api\/webhooks\/1561465296584179864\/[A-Za-z0-9_-]+$/.test(destination.pathname))throw Error('invalid');
+        url=destination.href;
+      }catch{return answer(res,400,{error:'invalid_sanctions_destination'});}
+    }
     const payload={...row.payload,allowed_mentions:{parse:[]}};
     const body=JSON.stringify(payload),key=createHash('sha256').update(url+'\n'+String(row.id||'')+'\n'+body).digest('hex');
     if(row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});

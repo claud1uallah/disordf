@@ -21,3 +21,15 @@ test('rate limit respected without issuing another Discord request',async()=>{
  await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
  try{for(let i=0;i<2;i++){const response=await fetch(base+'/relay',{method:'POST',headers:{authorization:'Bearer '+secret},body:JSON.stringify({route:'123',payload:{content:'test'}})});assert.equal(response.status,429);assert((await response.json()).retry_after>=1338);}assert.equal(calls,1);}finally{await new Promise(r=>server.close(r));}
 });
+
+test('only the explicitly approved sanctions destination can be supplied',async()=>{
+ let received;const server=createRelay(configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:JSON.stringify({connect:webhook})}),{fetcher:async(url)=>{received=url;return new Response(null,{status:204});}});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ try{
+  const post=destination=>fetch(base+'/relay',{method:'POST',headers:{authorization:'Bearer '+secret},body:JSON.stringify({route:'1561465296584179864',destination,payload:{content:'test'}})});
+  assert.equal((await post('https://example.com/')).status,400);
+  assert.equal((await post('https://discord.com/api/webhooks/999/wrong')).status,400);
+  assert.equal((await post('https://discord.com/api/webhooks/1561465296584179864/test_token')).status,200);
+  assert.equal(received,'https://discord.com/api/webhooks/1561465296584179864/test_token');
+ }finally{await new Promise(r=>server.close(r));}
+});
