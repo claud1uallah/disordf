@@ -27,28 +27,32 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
     if(pending>=100)return answer(res,503,{error:'busy'});
     let raw='',row;
     try{for await(const part of req){raw+=part.toString('utf8');if(Buffer.byteLength(raw)>65536)return answer(res,413,{error:'payload_too_large'});}row=JSON.parse(raw);}catch{return answer(res,400,{error:'invalid_json'});}
-    if(!row||typeof row!=='object'||!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||(!config.routes.has(String(row.route))&&String(row.route)!=='1561465296584179864'))return answer(res,400,{error:'invalid_route_or_payload'});
+    if(!row||typeof row!=='object'||!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||(!config.routes.has(String(row.route))&&!['1561465296584179864','1434184566284882012'].includes(String(row.route))))return answer(res,400,{error:'invalid_route_or_payload'});
     if(row.payload.content===undefined&&!Array.isArray(row.payload.embeds))return answer(res,400,{error:'empty_message'});
     let url=config.routes.get(String(row.route));
-    if(!url&&String(row.route)==='1561465296584179864'){
+    if(!url&&['1561465296584179864','1434184566284882012'].includes(String(row.route))){
       try{
         const destination=new URL(row.destination);
-        if(destination.protocol!=='https:'||destination.host!=='discord.com'||destination.username||destination.password||destination.search||destination.hash||!/^\/api\/webhooks\/1561465296584179864\/[A-Za-z0-9_-]+$/.test(destination.pathname))throw Error('invalid');
+        if(destination.protocol!=='https:'||destination.host!=='discord.com'||destination.username||destination.password||destination.search||destination.hash||!new RegExp('^/api/webhooks/'+String(row.route)+'/[A-Za-z0-9_-]+$').test(destination.pathname))throw Error('invalid');
         url=destination.href;
       }catch{return answer(res,400,{error:'invalid_sanctions_destination'});}
     }
+    const statusMessage=row.operation==='status';
+    if(statusMessage&&String(row.route)!=='1434184566284882012')return answer(res,400,{error:'status_route_only'});
+    if(statusMessage&&row.message_id&&!/^\d{15,24}$/.test(String(row.message_id)))return answer(res,400,{error:'invalid_message_id'});
+    const requestUrl=statusMessage?(row.message_id?url+'/messages/'+row.message_id:url+'?wait=true'):url;
     const payload={...row.payload,allowed_mentions:{parse:[]}};
     const body=JSON.stringify(payload),key=createHash('sha256').update(url+'\n'+String(row.id||'')+'\n'+body).digest('hex');
-    if(row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});
+    if(!statusMessage&&row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});
     const deadline=clock()+20000;pending++;
     const operation=tail.then(async()=>{
       if(res.destroyed)return;
       if(clock()>deadline)return answer(res,503,{error:'busy_retry'});
-      if(row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});
+      if(!statusMessage&&row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});
       const remaining=Math.max(globalUntil,cooldowns.get(url)||0)-clock();
       if(remaining>0){const seconds=Math.ceil(remaining/1000);return answer(res,429,{retry_after:seconds,global:true},{'retry-after':String(seconds)});}
       let response;
-      try{response=await fetcher(url,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Storm-Discord-Relay/1.0'},body,signal:AbortSignal.timeout(15000)});}catch{return answer(res,503,{error:'discord_unreachable'});}
+      try{response=await fetcher(requestUrl,{method:statusMessage&&row.message_id?'PATCH':'POST',headers:{'Content-Type':'application/json','User-Agent':'Storm-Discord-Relay/1.0'},body,signal:AbortSignal.timeout(15000)});}catch{return answer(res,503,{error:'discord_unreachable'});}
       if(response.status===429){
         let detail={};try{detail=await response.json();}catch{}
         const wait=Math.max(numeric(detail.retry_after),numeric(response.headers.get('retry-after')),numeric(response.headers.get('x-ratelimit-reset-after')));
@@ -59,10 +63,12 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
         return answer(res,429,{retry_after:seconds,global:detail.global===true||!wait},{'retry-after':String(seconds)});
       }
       if(response.status>=200&&response.status<300){
-        if(row.id){receipts.set(key,clock()+86400000);if(receipts.size>10000)receipts.delete(receipts.keys().next().value);}
+        if(!statusMessage&&row.id){receipts.set(key,clock()+86400000);if(receipts.size>10000)receipts.delete(receipts.keys().next().value);}
         if(response.headers.get('x-ratelimit-remaining')==='0')cooldowns.set(url,clock()+(numeric(response.headers.get('x-ratelimit-reset-after'))+1)*1000);
         console.info('Delivered channel',String(row.route),'HTTP',response.status);
-        return answer(res,200,{ok:true,discord_status:response.status});
+        let messageId;
+        if(statusMessage){try{messageId=(await response.json()).id;}catch{}if(!messageId)return answer(res,502,{error:'missing_discord_message_id'});}
+        return answer(res,200,{ok:true,discord_status:response.status,...(messageId?{message_id:messageId}:{})});
       }
       console.warn('Discord rejected delivery; HTTP',response.status);
       return answer(res,502,{error:'discord_rejected',discord_status:response.status});

@@ -33,3 +33,14 @@ test('only the explicitly approved sanctions destination can be supplied',async(
   assert.equal(received,'https://discord.com/api/webhooks/1561465296584179864/test_token');
  }finally{await new Promise(r=>server.close(r));}
 });
+
+test('status creates once then edits the persisted message',async()=>{
+ const requests=[];const server=createRelay(configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:JSON.stringify({connect:webhook})}),{fetcher:async(url,options)=>{requests.push({url,method:options.method});return Response.json({id:'123456789012345678'},{status:200});}});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ try{
+ const row={route:'1434184566284882012',destination:'https://discord.com/api/webhooks/1434184566284882012/test_token',operation:'status',payload:{embeds:[{title:'Storm Status'}]}};
+ const post=()=>fetch(base+'/relay',{method:'POST',headers:{authorization:'Bearer '+secret},body:JSON.stringify(row)});
+ let response=await post();assert.equal(response.status,200);row.message_id=(await response.json()).message_id;assert.equal(row.message_id,'123456789012345678');
+ response=await post();assert.equal(response.status,200);assert.equal(requests[0].method,'POST');assert(requests[0].url.endsWith('?wait=true'));assert.equal(requests[1].method,'PATCH');assert(requests[1].url.endsWith('/messages/'+row.message_id));
+ }finally{await new Promise(r=>server.close(r));}
+});
