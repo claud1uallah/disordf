@@ -61,3 +61,14 @@ test('ten-minute reports upload complete JSONL and deduplicate attachment conten
   row.payload.storm_log_file.name='../invalid';assert.equal((await post()).status,400);
  }finally{await new Promise(r=>server.close(r));}
 });
+
+test('public FiveM banner is a direct JPEG, supports HEAD and does not expose other files',async()=>{
+ const server=createRelay(configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:JSON.stringify({connect:webhook})}));
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ try{
+  const response=await fetch(base+'/assets/storm-banner-v2.jpg');assert.equal(response.status,200);assert.equal(response.headers.get('content-type'),'image/jpeg');
+  const image=new Uint8Array(await response.arrayBuffer());assert.equal(image[0],255);assert.equal(image[1],216);assert(image.length>100000);
+  const head=await fetch(base+'/assets/storm-banner-v2.jpg',{method:'HEAD'});assert.equal(head.status,200);assert.equal(Number(head.headers.get('content-length')),image.length);assert.equal((await head.arrayBuffer()).byteLength,0);
+  assert.equal((await fetch(base+'/assets/.env')).status,404);
+ }finally{await new Promise(r=>server.close(r));}
+});
