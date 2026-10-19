@@ -69,6 +69,8 @@ test('public FiveM banner is a direct JPEG, supports HEAD and does not expose ot
   const response=await fetch(base+'/assets/storm-banner-v2.jpg');assert.equal(response.status,200);assert.equal(response.headers.get('content-type'),'image/jpeg');
   const image=new Uint8Array(await response.arrayBuffer());assert.equal(image[0],255);assert.equal(image[1],216);assert(image.length>100000);
   const head=await fetch(base+'/assets/storm-banner-v2.jpg',{method:'HEAD'});assert.equal(head.status,200);assert.equal(Number(head.headers.get('content-length')),image.length);assert.equal((await head.arrayBuffer()).byteLength,0);
+  const detail=await fetch(base+'/assets/storm-banner-detail-v3.png');assert.equal(detail.status,200);assert.equal(detail.headers.get('content-type'),'image/png');
+  const png=new Uint8Array(await detail.arrayBuffer());assert.deepEqual([...png.slice(0,8)],[137,80,78,71,13,10,26,10]);
   assert.equal((await fetch(base+'/assets/.env')).status,404);
  }finally{await new Promise(r=>server.close(r));}
 });

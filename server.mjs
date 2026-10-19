@@ -2,6 +2,8 @@ import http from 'node:http';
 import {readFileSync} from 'node:fs';
 const bannerImage=readFileSync(new URL('./public/storm-banner-v2.jpg',import.meta.url));
 const bannerPath='/assets/storm-banner-v2.jpg';
+const detailBannerImage=readFileSync(new URL('./public/storm-banner-detail-v3.png',import.meta.url));
+const detailBannerPath='/assets/storm-banner-detail-v3.png';
 import {timingSafeEqual,createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 
@@ -23,9 +25,10 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
   let globalUntil=0,tail=Promise.resolve(),pending=0;const cooldowns=new Map(),receipts=new Map();
   const answer=(res,status,data,headers={})=>{if(!res.destroyed&&!res.writableEnded)res.writeHead(status,{'content-type':'application/json','cache-control':'no-store',...headers}).end(JSON.stringify(data));};
   return http.createServer(async(req,res)=>{
-    if((req.method==='GET'||req.method==='HEAD')&&req.url===bannerPath){
-      res.writeHead(200,{'content-type':'image/jpeg','content-length':bannerImage.length,'cache-control':'public, max-age=86400','access-control-allow-origin':'*','x-content-type-options':'nosniff'});
-      return res.end(req.method==='HEAD'?undefined:bannerImage);
+    if((req.method==='GET'||req.method==='HEAD')&&(req.url===bannerPath||req.url===detailBannerPath)){
+      const image=req.url===detailBannerPath?detailBannerImage:bannerImage;
+      res.writeHead(200,{'content-type':req.url===detailBannerPath?'image/png':'image/jpeg','content-length':image.length,'cache-control':'public, max-age=86400','access-control-allow-origin':'*','x-content-type-options':'nosniff'});
+      return res.end(req.method==='HEAD'?undefined:image);
     }
     if(req.method==='GET'&&(req.url==='/health'||req.url==='/'))return answer(res,200,{ok:true,service:'storm-discord-relay',log_batch_files:true});
     if(req.method!=='POST'||req.url!=='/relay')return answer(res,404,{error:'not_found'});
