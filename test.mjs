@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {configuration,createRelay}from './server.mjs';
+import {configuration,createRelay,logListMessages}from './server.mjs';
 const secret='test-secret-'.repeat(5),webhook='https://discord.com/api/webhooks/123/test_token';
 test('configuration rejects arbitrary destinations',()=>{assert.throws(()=>configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:'{"connect":"https://example.com/"}'}));});
 test('authentication, allowlist, confirmed delivery, mentions and deduplication',async()=>{
@@ -45,20 +45,45 @@ test('status creates once then edits the persisted message',async()=>{
  }finally{await new Promise(r=>server.close(r));}
 });
 
-test('ten-minute reports upload complete JSONL and deduplicate attachment content',async()=>{
+test('ten-minute reports show numbered text directly, without attachments, with deduplication',async()=>{
  let calls=0;
  const server=createRelay(configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:JSON.stringify({connect:webhook})}),{fetcher:async(url,options)=>{
-  calls++;assert(options.body instanceof FormData);assert.equal(options.headers['Content-Type'],undefined);
-  const message=JSON.parse(options.body.get('payload_json'));assert.deepEqual(message.allowed_mentions,{parse:[]});assert.equal(message.storm_log_file,undefined);
-  const file=options.body.get('files[0]');assert.equal(file.name,'storm-logs-123.jsonl');assert.equal(await file.text(),'event-1\nevent-2');
+  calls++;assert.equal(options.headers['Content-Type'],'application/json');
+  const message=JSON.parse(options.body);assert.deepEqual(message.allowed_mentions,{parse:[]});assert.equal(message.storm_log_file,undefined);assert.equal(message.attachments,undefined);
+  assert(message.embeds[0].description.includes('**1. Conectare**'));
+  assert(message.embeds[0].description.includes('**Jucator:** Rechinu | ID 1'));
+  assert(message.embeds[0].description.includes('**2. Deconectare**'));
   return new Response(null,{status:204});
  }});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
  try{
-  const row={route:'123',id:'batch-1',payload:{content:'2 events',storm_log_file:{name:'storm-logs-123.jsonl',text:'event-1\nevent-2'}}};
+  const text=[{at:1792409463,event:{embeds:[{title:'Conectare',fields:[{name:'Jucator',value:'Rechinu | ID 1'}]}]}},{at:1792409464,event:{embeds:[{title:'Deconectare',description:'Motiv: quit'}]}}].map(JSON.stringify).join('\n');
+  const row={route:'123',id:'batch-1',payload:{content:'2 events',storm_log_file:{name:'storm-logs-123.jsonl',text}}};
   const post=()=>fetch(base+'/relay',{method:'POST',headers:{authorization:'Bearer '+secret},body:JSON.stringify(row)});
   assert.equal((await post()).status,200);assert.equal((await post()).status,200);assert.equal(calls,1);
   row.payload.storm_log_file.name='../invalid';assert.equal((await post()).status,400);
+ }finally{await new Promise(r=>server.close(r));}
+});
+
+test('large text reports preserve every character and resume after partial rate limiting',async()=>{
+ const description='Detalii '+('😀abc'.repeat(1600));
+ const file={name:'storm-logs-123.jsonl',text:JSON.stringify({event:{embeds:[{title:'Actiune',description}]}})};
+ const pages=logListMessages(file,{});
+ assert(pages.length>2);assert(pages.every(p=>p.embeds[0].description.length<=3500));
+ assert.equal(pages.map(p=>p.embeds[0].description).join(''),'**1. Actiune**\n'+description);
+ let now=1000,calls=0;const accepted=[];
+ const server=createRelay(configuration({RELAY_SECRET:secret,DISCORD_WEBHOOKS_JSON:JSON.stringify({connect:webhook})}),{clock:()=>now,fetcher:async(_,options)=>{
+  calls++;if(calls===2)return Response.json({retry_after:1},{status:429});
+  accepted.push(JSON.parse(options.body));return new Response(null,{status:204});
+ }});
+ await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;
+ try{
+  const row={route:'123',id:'large-batch',payload:{embeds:[],storm_log_file:file}};
+  const post=()=>fetch(base+'/relay',{method:'POST',headers:{authorization:'Bearer '+secret},body:JSON.stringify(row)});
+  assert.equal((await post()).status,429);assert.equal(accepted.length,1);
+  now+=10000;assert.equal((await post()).status,200);
+  assert.deepEqual(accepted,pages,'retry skips already accepted pages and retains all later pages');
+  assert.equal((await post()).status,200);assert.equal(accepted.length,pages.length);
  }finally{await new Promise(r=>server.close(r));}
 });
 

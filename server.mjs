@@ -21,6 +21,45 @@ export function configuration(env=process.env){
 }
 const digest=s=>createHash('sha256').update(s).digest();
 const numeric=v=>Number.isFinite(Number(v))&&Number(v)>0?Number(v):0;
+// JSONL remains an internal transport format for already queued reports. Discord
+// receives readable numbered lists, never a downloadable log attachment.
+export function logListMessages(file,payload){
+  const entries=file.text.split('\n').filter(line=>line.trim()).map((line,index)=>{
+    let record;try{record=JSON.parse(line);}catch{return `**${index+1}.** ${line}`;}
+    const event=record.event||record;
+    const embeds=Array.isArray(event.embeds)?event.embeds:[];
+    const title=embeds[0]?.title||'Eveniment';
+    let when='';
+    if(Number.isFinite(record.at)&&record.at>0){
+      when=' · `'+new Intl.DateTimeFormat('ro-RO',{timeZone:'Europe/Bucharest',dateStyle:'short',timeStyle:'medium'}).format(new Date(record.at*1000))+'`';
+    }
+    const lines=[`**${index+1}. ${title}**${when}`];
+    if(event.content)lines.push(String(event.content));
+    for(const [i,embed]of embeds.entries()){
+      if(i&&embed.title)lines.push('**'+embed.title+'**');
+      if(embed.description)lines.push(String(embed.description));
+      for(const field of embed.fields||[])lines.push(`**${field.name}:** ${field.value}`);
+      if(embed.footer?.text)lines.push(String(embed.footer.text));
+    }
+    if(lines.length===1)lines.push(JSON.stringify(event));
+    return lines.join('\n');
+  });
+  const pages=[];let page='';
+  for(const entry of entries){
+    let rest=entry;
+    while(rest.length){
+      const room=3500-page.length-(page?2:0);
+      if(room<100){pages.push(page);page='';continue;}
+      let end=Math.min(room,rest.length);
+      if(end<rest.length&&/[\uD800-\uDBFF]/.test(rest[end-1]))end--;
+      const part=rest.slice(0,end);page+=(page?'\n\n':'')+part;rest=rest.slice(end);
+      if(rest){pages.push(page);page='';}
+    }
+  }
+  if(page)pages.push(page);
+  if(!pages.length)throw Error('empty_log_batch');
+  return pages.map((description,i)=>({username:payload.username||'Storm | Logs',allowed_mentions:{parse:[]},embeds:[{title:'Storm RP | Loguri'+(pages.length>1?` (${i+1}/${pages.length})`:''),description,color:10699755}]}));
+}
 export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
   let globalUntil=0,tail=Promise.resolve(),pending=0;const cooldowns=new Map(),receipts=new Map();
   const answer=(res,status,data,headers={})=>{if(!res.destroyed&&!res.writableEnded)res.writeHead(status,{'content-type':'application/json','cache-control':'no-store',...headers}).end(JSON.stringify(data));};
@@ -30,7 +69,7 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
       res.writeHead(200,{'content-type':req.url===detailBannerPath?'image/png':'image/jpeg','content-length':image.length,'cache-control':'public, max-age=86400','access-control-allow-origin':'*','x-content-type-options':'nosniff'});
       return res.end(req.method==='HEAD'?undefined:image);
     }
-    if(req.method==='GET'&&(req.url==='/health'||req.url==='/'))return answer(res,200,{ok:true,service:'storm-discord-relay',log_batch_files:true});
+    if(req.method==='GET'&&(req.url==='/health'||req.url==='/'))return answer(res,200,{ok:true,service:'storm-discord-relay',log_batch_files:true,log_batch_text:true});
     if(req.method!=='POST'||req.url!=='/relay')return answer(res,404,{error:'not_found'});
     const auth=req.headers.authorization||'';
     if(!timingSafeEqual(digest(auth),digest('Bearer '+config.secret)))return answer(res,401,{error:'unauthorized'});
@@ -54,6 +93,7 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
     const payload={...row.payload,allowed_mentions:{parse:[]}};
     const logFile=payload.storm_log_file;delete payload.storm_log_file;
     if(logFile&&(statusMessage||typeof logFile.text!=='string'||Buffer.byteLength(logFile.text)>1024*1024||!/^storm-logs-[0-9]+\.jsonl$/.test(logFile.name)))return answer(res,400,{error:'invalid_log_file'});
+    let messages;try{messages=logFile?logListMessages(logFile,payload):[payload];}catch{return answer(res,400,{error:'invalid_log_batch'});}
     const body=JSON.stringify(payload),key=createHash('sha256').update(url+'\n'+String(row.id||'')+'\n'+body+'\n'+(logFile?logFile.text:'')).digest('hex');
     if(!statusMessage&&row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});
     const deadline=clock()+20000;pending++;
@@ -61,15 +101,17 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
       if(res.destroyed)return;
       if(clock()>deadline)return answer(res,503,{error:'busy_retry'});
       if(!statusMessage&&row.id&&receipts.get(key)>clock())return answer(res,200,{ok:true,duplicate:true});
+      let messageId;
+      for(let index=0;index<messages.length;index++){
+      const partKey=key+':'+index;
+      if(!statusMessage&&row.id&&receipts.get(partKey)>clock())continue;
+      if(res.destroyed)return;
+      if(clock()>deadline)return answer(res,503,{error:'busy_retry'});
       const remaining=Math.max(globalUntil,cooldowns.get(url)||0)-clock();
       if(remaining>0){const seconds=Math.ceil(remaining/1000);return answer(res,429,{retry_after:seconds,global:true},{'retry-after':String(seconds)});}
       let response;
-      let requestBody=body;const requestHeaders={'User-Agent':'Storm-Discord-Relay/1.0'};
-      if(logFile){
-        const form=new FormData();
-        form.set('payload_json',JSON.stringify({...payload,attachments:[{id:0,filename:logFile.name}]}));
-        form.set('files[0]',new Blob([logFile.text],{type:'application/x-ndjson'}),logFile.name);requestBody=form;
-      }else requestHeaders['Content-Type']='application/json';
+      const requestBody=JSON.stringify(messages[index]);
+      const requestHeaders={'User-Agent':'Storm-Discord-Relay/1.0','Content-Type':'application/json'};
       try{response=await fetcher(requestUrl,{method:statusMessage&&row.message_id?'PATCH':'POST',headers:requestHeaders,body:requestBody,signal:AbortSignal.timeout(15000)});}catch{return answer(res,503,{error:'discord_unreachable'});}
       if(response.status===429){
         let detail={};try{detail=await response.json();}catch{}
@@ -81,15 +123,17 @@ export function createRelay(config,{fetcher=fetch,clock=Date.now}={}){
         return answer(res,429,{retry_after:seconds,global:detail.global===true||!wait},{'retry-after':String(seconds)});
       }
       if(response.status>=200&&response.status<300){
-        if(!statusMessage&&row.id){receipts.set(key,clock()+86400000);if(receipts.size>10000)receipts.delete(receipts.keys().next().value);}
+        if(!statusMessage&&row.id){receipts.set(partKey,clock()+86400000);if(receipts.size>10000)receipts.delete(receipts.keys().next().value);}
         if(response.headers.get('x-ratelimit-remaining')==='0')cooldowns.set(url,clock()+(numeric(response.headers.get('x-ratelimit-reset-after'))+1)*1000);
         console.info('Delivered channel',String(row.route),'HTTP',response.status);
-        let messageId;
         if(statusMessage){try{messageId=(await response.json()).id;}catch{}if(!messageId)return answer(res,502,{error:'missing_discord_message_id'});}
-        return answer(res,200,{ok:true,discord_status:response.status,...(messageId?{message_id:messageId}:{})});
+        continue;
       }
       console.warn('Discord rejected delivery; HTTP',response.status);
       return answer(res,502,{error:'discord_rejected',discord_status:response.status});
+      }
+      if(!statusMessage&&row.id){receipts.set(key,clock()+86400000);if(receipts.size>10000)receipts.delete(receipts.keys().next().value);}
+      return answer(res,200,{ok:true,...(messageId?{message_id:messageId}:{})});
     });
     tail=operation.catch(()=>{});
     try{await operation;}catch{answer(res,500,{error:'internal_error'});}finally{pending--;}
